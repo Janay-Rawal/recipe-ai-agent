@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: recipe_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: recipe_db
+      MYSQL_USER: recipe_user
+      MYSQL_PASSWORD: recipe_pass
+    ports:
+      - "3307:3306"   
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-prootpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:

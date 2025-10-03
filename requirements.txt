@@ -1,0 +1,8 @@
+streamlit
+python-dotenv
+langchain-community
+langchain
+requests
+pillow
+pymysql
+sqlalchemy
