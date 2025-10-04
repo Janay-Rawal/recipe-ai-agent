@@ -1,4 +1,4 @@
-# app_recipes.py
+
 import os
 import re
 import json
@@ -15,21 +15,21 @@ from langchain_community.llms import Ollama
 from langchain.schema import StrOutputParser
 
 
-# -------------------- Config --------------------
+
 load_dotenv()
 DB_URL = (
     f"mysql+pymysql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}"
     f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}?charset=utf8mb4"
 )
 
-# Change if your Ollama server isn’t default:
-OLLAMA_BASE_URL: Optional[str] = None  # e.g., "http://127.0.0.1:11434"
+
+OLLAMA_BASE_URL: Optional[str] = None 
 OLLAMA_MODEL = "llama3.1:latest"
 
 st.set_page_config(page_title="🍳 AI Recipe Agent", page_icon="🍳", layout="wide")
 st.title("🍳 AI Recipe Agent — MySQL + LangChain + Ollama")
 
-# -------------------- DB Helpers --------------------
+
 @st.cache_resource(show_spinner=False)
 def get_engine() -> Engine:
     return create_engine(DB_URL, pool_pre_ping=True, pool_recycle=180)
@@ -83,7 +83,7 @@ def upsert_ingredient(
     qty: float,
     unit: str,
     category: str,
-    diet_type: str = "unknown",           # <- default added
+    diet_type: str = "unknown",          
     expires_on: str | None = None,
 ):
     from sqlalchemy import text
@@ -187,7 +187,7 @@ def parse_usage_from_markdown(md: str) -> list[dict]:
     except Exception:
         return []
 
-# -------------------- Ranking --------------------
+
 def days_left(iso_date: Optional[str]) -> float:
     if not iso_date:
         return 9_999.0
@@ -209,15 +209,15 @@ def rank_ingredients(
         dleft = days_left(it.get("expires_on"))
         prio = 1.0 / max(dleft, 0.25)
 
-        # perishables boost
+       
         cat = (it.get("category") or "").lower()
         if cat in {"dairy", "protein", "veg", "vegetable", "fruit"}:
             prio *= 1.2
 
-        # diet alignment boosts/penalties
+       
         it_diet = (it.get("diet_type") or "unknown").lower()
         if exclude_non_veg and it_diet == "non-veg":
-            prio *= 0.15   # strong penalty
+            prio *= 0.15   
         if exclude_eggs and it_diet == "eggs-ok":
             prio *= 0.4
         if exclude_dairy and cat == "dairy":
@@ -238,21 +238,21 @@ def snapshot_block(ranked: List[Dict[str, Any]], limit: int = 14) -> str:
 
 def guess_category(name: str) -> str:
     n = name.lower()
-    # non-veg
+   
     if any(k in n for k in ["chicken", "mutton", "goat", "lamb", "beef", "pork", "fish", "prawn", "shrimp", "seafood", "turkey", "bacon", "sausage"]):
-        return "protein"   # keep schema consistent (non-veg under protein)
-    # eggs
+        return "protein"   
+   
     if "egg" in n:
         return "protein"
-    # dairy
+
     if any(k in n for k in ["milk", "paneer", "cheese", "yogurt", "curd", "butter", "ghee", "cream"]):
         return "dairy"
-    # veg/fruit
+
     if any(k in n for k in ["tomato","onion","potato","carrot","spinach","capsicum","pepper","cucumber","cabbage","cauliflower","broccoli","okra","bhindi","brinjal","eggplant"]):
         return "veg"
     if any(k in n for k in ["banana","apple","mango","orange","grape","berries","strawberry","pineapple","pear","papaya"]):
         return "fruit"
-    # grains/condiments
+
     if any(k in n for k in ["rice","flour","atta","wheat","maida","bread","pasta","noodle","quinoa","oats","poha","suji","semolina"]):
         return "grain"
     if any(k in n for k in ["salt","sugar","ketchup","sauce","vinegar","soy","mustard","pickle","masala","spice","chilli","chili","turmeric","cumin","coriander","garam"]):
@@ -265,7 +265,7 @@ def guess_diet_type(name: str) -> str:
         return "non-veg"
     if "egg" in n:
         return "eggs-ok"
-    # default assumption
+
     return "veg"
 
 _QTY_UNIT_RE = re.compile(
@@ -316,7 +316,7 @@ def parse_line_to_item(line: str, default_unit: str, default_days: int) -> Dict[
         "expires_on": expires_on,
     }
 
-# -------------------- LLM Prompt --------------------
+
 SYSTEM_RECIPE = """You are a helpful recipe creator that:
 - prioritizes soon-to-expire items,
 - maximizes use of the provided pantry,
@@ -382,7 +382,7 @@ def generate_with_llm(ranked_block: str, dietary: str, time_limit: int, servings
     }
     return chain.invoke(user_vars)
 
-# -------------------- UI --------------------
+
 engine = get_engine()
 ensure_tables(engine)
 
@@ -420,7 +420,7 @@ with st.sidebar:
     else:
         st.caption("No history yet.")
 
-# Pantry list
+
 st.subheader("Pantry (from MySQL)")
 items = list_ingredients(engine)
 ranked = rank_ingredients(
@@ -432,7 +432,7 @@ ranked = rank_ingredients(
 )
 
 if ranked:
-    # Streamlit deprecates use_container_width → width="stretch"
+
     st.dataframe(
         [
             {k: v for k, v in it.items() if not k.startswith("_")}
@@ -444,7 +444,7 @@ if ranked:
 else:
     st.info("No ingredients yet. Add some below!")
 
-# Add / Update form
+
 st.markdown("### Add / Update Ingredient")
 with st.form("add_form"):
     name = st.text_input("Name *").strip().lower()
@@ -482,7 +482,7 @@ with st.expander("Paste a list (comma/newline separated)"):
 
     if st.button("Add all"):
         lines = []
-        # allow commas or newlines
+        
         for part in (bulk_text or "").replace(",", "\n").splitlines():
             if part.strip():
                 lines.append(part.strip())
@@ -495,7 +495,7 @@ with st.expander("Paste a list (comma/newline separated)"):
                 item = parse_line_to_item(ln, default_unit=default_unit, default_days=int(default_days))
                 if not item:
                     continue
-                # Upsert (existing logic already does overwrite via ON DUPLICATE KEY)
+                
                 upsert_ingredient(
                     engine,
                     name=item["name"],
@@ -511,7 +511,7 @@ with st.expander("Paste a list (comma/newline separated)"):
             else:
                 st.info("Nothing parsed from the input.")
 
-# Delete
+
 with st.expander("Delete an ingredient"):
     if items:
         choice = st.selectbox("Select", [f"{it['id']} • {it['name']} ({it['qty']}{it['unit']})" for it in items])
@@ -525,7 +525,7 @@ with st.expander("Delete an ingredient"):
 
 st.markdown("---")
 
-# Generate recipes
+
 st.header("✨ Generate Recipes from Pantry")
 if st.button("Generate Recipes"):
     if not ranked:
@@ -554,7 +554,7 @@ if st.button("Generate Recipes"):
                 }, snap, md)
                 st.success("Recipes generated ✅")
                 st.markdown(md)
-                        # Parse usage JSON and show per-recipe "Use this" buttons
+    
                 usage = parse_usage_from_markdown(md)
                 if not usage:
                     st.info("No usage_json block detected — cannot auto-deduct.")

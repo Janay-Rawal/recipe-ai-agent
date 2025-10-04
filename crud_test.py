@@ -10,7 +10,6 @@ url = (
 engine = create_engine(url, pool_pre_ping=True)
 
 with engine.begin() as conn:
-    # upsert by unique name
     conn.execute(text("""
         INSERT INTO ingredients (name, qty, unit, category, expires_on)
         VALUES (:name, :qty, :unit, :category, :expires_on)

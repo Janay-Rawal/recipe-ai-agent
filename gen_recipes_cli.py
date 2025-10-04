@@ -1,4 +1,3 @@
-# gen_recipes_cli.py
 import os
 import argparse
 from datetime import datetime
@@ -12,7 +11,6 @@ from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms import Ollama
 from langchain.schema import StrOutputParser
 
-# ---------- Config ----------
 load_dotenv()
 DB_URL = (
     f"mysql+pymysql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}"
@@ -138,7 +136,6 @@ def main():
     parser.add_argument("--model", default="llama3.1:latest", help="Ollama model tag")
     args = parser.parse_args()
 
-    # DB connect
     try:
         from sqlalchemy import create_engine
         engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=180)
@@ -155,13 +152,13 @@ def main():
     ranked = rank_ingredients(items)
     ranked_block = build_ranked_block(ranked)
 
-    # LangChain + Ollama
+
     try:
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_RECIPE),
             ("user", USER_TEMPLATE),
         ])
-        llm = Ollama(model=args.model)  # configure base_url=... if not default
+        llm = Ollama(model=args.model)  
         chain = prompt | llm | StrOutputParser()
 
         user_vars = {
