@@ -14,7 +14,6 @@ engine = create_engine(url, pool_pre_ping=True)
 st.set_page_config(page_title="Pantry DB – Basic", page_icon="🥫", layout="wide")
 st.title("🥫 Pantry (MySQL) — Basic")
 
-# List ingredients
 with engine.begin() as conn:
     rows = conn.execute(text("""
         SELECT id, name, qty, unit, category,
@@ -29,7 +28,6 @@ if rows:
 else:
     st.info("No ingredients yet.")
 
-# Add / update form (upsert by name)
 st.subheader("Add / Update ingredient")
 with st.form("add_form"):
     name = st.text_input("Name *").strip().lower()

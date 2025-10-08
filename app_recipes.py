@@ -4,6 +4,7 @@ import re
 import json
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
+from datetime import datetime, date
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -13,6 +14,8 @@ from sqlalchemy.engine import Engine
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms import Ollama
 from langchain.schema import StrOutputParser
+
+
 
 
 
@@ -316,6 +319,25 @@ def parse_line_to_item(line: str, default_unit: str, default_days: int) -> Dict[
         "expires_on": expires_on,
     }
 
+def is_expired(iso_date: str | None) -> bool:
+    if not iso_date:
+        return False
+    try:
+        d = datetime.strptime(iso_date, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return d < date.today()
+
+def filter_items_by_expiry(items: list[dict], exclude_expired: bool) -> tuple[list[dict], list[dict]]:
+    """Returns (active_items, expired_items) given the toggle."""
+    active, expired = [], []
+    for it in items:
+        (expired if is_expired(it.get("expires_on")) else active).append(it)
+    if exclude_expired:
+        return active, expired
+    else:
+        return items, expired  
+
 
 SYSTEM_RECIPE = """You are a helpful recipe creator that:
 - prioritizes soon-to-expire items,
@@ -344,6 +366,7 @@ Rules:
 - Prefer at least 2 of the top 4 expiring items when possible.
 - Use mostly pantry items; mark any non-pantry as OPTIONAL.
 - Return clean, readable markdown for each recipe (title, time, ingredients, steps).
+- STRICTLY NEVER use expired items. All items provided in 'Pantry (expiry-ranked)' are non-expired.
 - At the END, include a fenced code block with the language tag "usage_json" that contains JSON like:
   [
     {{
@@ -393,6 +416,7 @@ with st.sidebar:
     servings = st.slider("Servings", 1, 8, 2)
     cuisine = st.text_input("Cuisine", value="Indian")
     num_options = st.slider("Recipe options", 1, 3, 2)
+    exclude_expired = st.checkbox("Exclude expired items", value=True)
 
     st.markdown("### Filters")
     exclude_non_veg = st.checkbox("Exclude non-veg", value=(dietary in {"veg","vegan"}))
@@ -423,8 +447,11 @@ with st.sidebar:
 
 st.subheader("Pantry (from MySQL)")
 items = list_ingredients(engine)
+
+active_items, expired_items = filter_items_by_expiry(items, exclude_expired=exclude_expired)
+
 ranked = rank_ingredients(
-    items,
+    active_items,  
     selected_diet=dietary,
     exclude_non_veg=exclude_non_veg,
     exclude_eggs=exclude_eggs,
@@ -443,6 +470,10 @@ if ranked:
     )
 else:
     st.info("No ingredients yet. Add some below!")
+
+if expired_items:
+    with st.expander(f"⚠️ {len(expired_items)} expired item(s)"):
+        st.dataframe(expired_items, width="stretch")
 
 
 st.markdown("### Add / Update Ingredient")
