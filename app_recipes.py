@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
+import math
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -146,49 +147,136 @@ def save_history(engine: Engine, params: Dict[str, Any], snapshot: str, markdown
 def apply_usage(engine: Engine, usage_items: list[dict]) -> dict:
     """
     Decrement quantities for each {"name","qty","unit"} in usage_items.
-    If unit differs from pantry unit, we apply qty only (best-effort).
+    Applies small normalizations for units/quantities.
     Returns a result summary.
     """
-    updated, missing = [], []
+    updated, missing, corrected, adjusted = [], [], [], []
+
     with engine.begin() as conn:
         for it in usage_items:
-            name = (it.get("name") or "").strip().lower()
+            raw_name = (it.get("name") or "").strip().lower()
             qty  = float(it.get("qty") or 0)
-            if not name or qty <= 0:
+            unit = (it.get("unit") or "").strip().lower()
+
+            if not raw_name or qty <= 0:
                 continue
 
             row = conn.execute(text(
-                "SELECT id, qty, unit FROM ingredients WHERE name = :name"
-            ), {"name": name}).mappings().one_or_none()
+                "SELECT id, name, qty, unit FROM ingredients WHERE name = :name"
+            ), {"name": raw_name}).mappings().one_or_none()
 
             if not row:
-                missing.append(name)
+                missing.append(raw_name)
                 continue
 
-            new_qty = max(0.0, float(row["qty"]) - qty)
+            adj_qty, adj_unit, note = normalize_usage_item(row["name"], qty, unit, row["unit"])
+            if note:
+                adjusted.append(note)
+
+            new_qty = max(0.0, float(row["qty"]) - float(adj_qty))
             conn.execute(text(
                 "UPDATE ingredients SET qty = :q WHERE id = :id"
             ), {"q": new_qty, "id": row["id"]})
-            updated.append({"name": name, "old_qty": float(row["qty"]), "new_qty": new_qty})
-    return {"updated": updated, "missing": missing}
+
+            updated.append({
+                "name": row["name"],
+                "old_qty": float(row["qty"]),
+                "new_qty": new_qty
+            })
+
+    return {"updated": updated, "missing": missing, "corrected": corrected, "adjusted": adjusted}
+
+PIECE_TO_GRAMS = {
+    "potato": 150,
+    "onion": 100,
+    "tomato": 100,
+    "egg": 50,
+    "chicken breast": 250,
+}
+
+def normalize_usage_item(name: str, qty: float, unit: str, pantry_unit: str) -> tuple[float, str, str | None]:
+    """
+    Returns (adj_qty, adj_unit, note)
+    - Blank unit -> assume pantry unit
+    - Prevent silly tiny grams/ml
+    - Simple conversions g<->pcs for common items
+    """
+    note = None
+    n = (name or "").strip().lower()
+    u = (unit or "").strip().lower()
+    pu = (pantry_unit or "").strip().lower()
+    q = float(qty or 0.0)
+
+    if not u:
+        u = pu
+        note = f"{name}: empty unit -> treating as '{pu}'"
+
+    def norm_u(x: str) -> str:
+        return {"grams":"g","gram":"g","ml":"ml","piece":"pcs","pc":"pcs"}.get(x, x)
+    u = norm_u(u)
+    pu = norm_u(pu)
+
+    if u == "g" and 0 < q <= 5:
+        q *= 100
+        note = note or f"{name}: qty too small; treated as {int(q)}g"
+    if u == "ml" and 0 < q <= 5:
+        q *= 100
+        note = note or f"{name}: qty too small; treated as {int(q)}ml"
+
+    if u == pu:
+        return (q, u, note)
+
+    if u in {"pcs"} and pu == "g":
+        grams = PIECE_TO_GRAMS.get(n, 100.0)
+        adj = q * grams
+        return (adj, "g", note or f"{name}: {q} pcs → {int(adj)}g")
+
+    if u == "g" and pu == "pcs":
+        grams = PIECE_TO_GRAMS.get(n, 100.0)
+        pcs = max(1, math.ceil(q / grams))
+        return (pcs, "pcs", note or f"{name}: {int(q)}g → {pcs} pcs")
+
+    return (q, u, note or f"{name}: unit mismatch ({u} vs {pu}); subtracting qty as-is")
 
 _USAGE_BLOCK_RE = re.compile(
-    r"```usage_json\s*(?P<json>[\s\S]*?)\s*```",
+    r"```(?:usage_json|json)\s*(?P<json>[\s\S]*?)\s*```",
     re.IGNORECASE
 )
 
+def _extract_first_json_array(text: str) -> str | None:
+    """Fallback: find first balanced JSON array substring."""
+    if not text:
+        return None
+    s = text.find("[")
+    if s == -1:
+        return None
+    depth = 0
+    for i in range(s, len(text)):
+        c = text[i]
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return text[s:i+1]
+    return None
+
 def parse_usage_from_markdown(md: str) -> list[dict]:
-    """
-    Extracts and loads the fenced usage_json block.
-    Returns: [{"title": "...", "items": [{"name": "...", "qty": 0, "unit": "..."}]}]
-    """
-    m = _USAGE_BLOCK_RE.search(md or "")
-    if not m:
+    if not md:
         return []
-    try:
-        return json.loads(m.group("json").strip())
-    except Exception:
-        return []
+    m = _USAGE_BLOCK_RE.search(md)
+    if m:
+        try:
+            return json.loads(m.group("json").strip())
+        except Exception:
+            pass
+    arr = _extract_first_json_array(md)
+    if arr:
+        try:
+            return json.loads(arr)
+        except Exception:
+            pass
+    return []
 
 
 def days_left(iso_date: Optional[str]) -> float:
@@ -232,6 +320,17 @@ def rank_ingredients(
 
     ranked.sort(key=lambda x: (-x["_priority"], x["name"]))
     return ranked
+
+def extract_titles_from_md(md: str) -> list[str]:
+    """Pull titles from the usage_json block (fallback: none)."""
+    usage = parse_usage_from_markdown(md or "")
+    titles = []
+    for r in usage:
+        t = (r.get("title") or "").strip()
+        if t:
+            titles.append(t)
+    return titles
+
 def snapshot_block(ranked: List[Dict[str, Any]], limit: int = 14) -> str:
     lines = []
     for i, it in enumerate(ranked[:limit], start=1):
@@ -367,6 +466,11 @@ Rules:
 - Use mostly pantry items; mark any non-pantry as OPTIONAL.
 - Return clean, readable markdown for each recipe (title, time, ingredients, steps).
 - STRICTLY NEVER use expired items. All items provided in 'Pantry (expiry-ranked)' are non-expired.
+- In usage_json, use realistic quantities that match pantry units:
+  - meats in grams should be 100–500g, never 1–5g;
+  - vegetables in pcs or 100–400g;
+  - eggs in pcs.
+- Match pantry names and units exactly when possible.
 - At the END, include a fenced code block with the language tag "usage_json" that contains JSON like:
   [
     {{
@@ -425,24 +529,57 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("History")
-    hist_rows = list_history(engine, limit=10)
-    if hist_rows:
-        pick = st.selectbox(
-            "View a previous run",
-            ["(select)"] + [f"#{hid} • {created} • {d}/{t}m/{s} servings/{c} ({n} ops)"
-                            for (hid, created, d, t, s, c, n) in hist_rows]
-        )
-        if pick != "(select)":
-            hid = int(pick.split("•")[0].strip()[1:])
-            rec = get_history(engine, hid)
-            if rec:
-                _, created, d, t, s, c, n, snap, md = rec
-                st.caption(f"Run at {created} | dietary={d}, time={t}m, servings={s}, cuisine={c}, options={n}")
-                with st.expander("Pantry snapshot used"):
-                    st.code(snap or "")
-                st.markdown(md or "")
-    else:
-        st.caption("No history yet.")
+
+    hist_rows = list_history(engine, limit=10)  
+    display = ["(select)"]
+    id_index = {"(select)": None}
+
+    for (hid, created, d, t, s, c, n) in hist_rows:
+        rec = get_history(engine, hid) 
+        titles = extract_titles_from_md(rec[8] if len(rec) > 8 else rec[-1])  
+        if titles:
+            label = " | ".join(titles[:2]) + ("" if len(titles) <= 2 else " …")
+        else:
+            label = f"Run {hid} • {created}"
+        display.append(label)
+        id_index[label] = hid
+
+    pick = st.selectbox("View a previous run", display)
+
+    if id_index.get(pick):
+        hid = id_index[pick]
+        rec = get_history(engine, hid)
+        if rec:
+            _, created, d, t, s, c, n, snap, md = rec
+            st.caption(f"Run at {created} | dietary={d}, time={t}m, servings={s}, cuisine={c}, options={n}")
+
+            with st.expander("Pantry snapshot used"):
+                st.code(snap or "")
+
+            st.markdown(md or "")
+
+            usage = parse_usage_from_markdown(md or "")
+            if usage:
+                st.subheader("Apply a recipe to pantry")
+                for idx, reci in enumerate(usage, start=1):
+                    title = reci.get("title") or f"Recipe {idx}"
+                    items = reci.get("items") or []
+                    with st.expander(f"🧾 {title} — will deduct:"):
+                        if items:
+                            st.write([{k: v for k, v in it.items() if k in {"name","qty","unit"}} for it in items])
+                        else:
+                            st.caption("No pantry items listed.")
+                        if st.button(f"Use this recipe (deduct)", key=f"use_hist_{hid}_{idx}"):
+                            result = apply_usage(engine, items)
+                            if result.get("adjusted"):
+                                st.info("Adjusted qty/units: " + ", ".join(result["adjusted"]))
+                            if result.get("updated"):
+                                st.success(f"Updated: {[u['name'] for u in result['updated']]}")
+                            if result.get("missing"):
+                                st.warning(f"Missing in pantry (not deducted): {result['missing']}")
+                            st.rerun()
+            else:
+                st.info("No usage_json block detected in this history entry — cannot auto-deduct.")
 
 
 st.subheader("Pantry (from MySQL)")
@@ -498,9 +635,8 @@ st.markdown("### Bulk add from text")
 with st.expander("Paste a list (comma/newline separated)"):
     st.caption(
         "Examples:\n"
-        "- `chicken breast 500g, eggs 6pcs, paneer 200g, tomato 3pcs`\n"
+        "- `chicken breast 500g non-veg 2025-10-02, eggs 6pcs egg-ok 2025-10-02, paneer 200g veg 2025-10-02, tomato 3pcs veg 2025-10-02`\n"
         "- Each line can be `name [qty][unit]`. Unknowns default to qty=1 and chosen unit.\n"
-        "- Non-veg is auto-categorized under **protein** (chicken, fish, prawns, etc.)."
     )
     bulk_text = st.text_area("Items", height=140, placeholder="chicken breast 500g\neggs 6pcs\npaneer 200g\ntomato 3pcs")
     col1, col2, col3 = st.columns(3)
